@@ -2,140 +2,183 @@ import streamlit as st
 import pandas as pd
 import datetime
 import calendar
+import pdfplumber
+import re
 
-# --- KONFIGURÁCIÓ ÉS ÁLLANDÓK ---
-# Csapatok definíciója
-TEAMS = {
-    "1. Csapat (VIS, RE, MÁ, JK, TK)": {"weekend_work": "even"}, # Páros héten dolgozik hétvégén
-    "2. Csapat (VIN, VT, VCS, ME)":   {"weekend_work": "odd"}  # Páratlan héten dolgozik hétvégén
+# --- KONFIGURÁCIÓ ---
+TEAMS_RULES = {
+    "1. Csapat": {"weekend_work": "even"},
+    "2. Csapat": {"weekend_work": "odd"}
 }
 
-# Ünnepnapok (Szlovákia/Magyarország vegyes példa, bővíthető)
+# Név összerendelés
+PEOPLE_DATA = {
+    "VIS": {"team": "1. Csapat", "fingera_name": "Váradi István"},
+    "RE":  {"team": "1. Csapat", "fingera_name": "Váradi René"},
+    "MÁ":  {"team": "1. Csapat", "fingera_name": "Máté Arpád"},
+    "JK":  {"team": "1. Csapat", "fingera_name": "Jakus Klaudia"},
+    "TK":  {"team": "1. Csapat", "fingera_name": "Takács Kristián"},
+    "VIN": {"team": "2. Csapat", "fingera_name": "Vitko Norbert"},
+    "VT":  {"team": "2. Csapat", "fingera_name": "Vitko Tamás"},
+    "VCS": {"team": "2. Csapat", "fingera_name": "Varga Csaba"},
+    "ME":  {"team": "2. Csapat", "fingera_name": "Manetová Erika"}
+}
+
 HOLIDAYS_2026 = [
     "2026-01-01", "2026-01-06", "2026-04-03", "2026-04-06", 
     "2026-05-01", "2026-05-08", "2026-07-05", "2026-08-29", 
     "2026-09-01", "2026-09-15", "2026-11-01", "2026-11-17", "2026-12-24", "2026-12-25", "2026-12-26"
 ]
 
-def calculate_hours(date_obj, is_holiday, shift_type):
-    """Kiszámolja a nettó munkaórát a szabályok alapján."""
-    # Nettó idők (Bruttó - 30 perc szünet)
-    weekday_hours = (7 + 40/60) - 0.5  # 5:50-13:30 = 7h 40m
-    weekend_hours = (6 + 10/60) - 0.5  # 5:50-12:00 = 6h 10m
+# --- PDF FELDOLGOZÓ MOTOR ---
+def parse_time_str(time_str):
+    """Átalakítja a '+54:56' formátumot decimális órára (pl. 54.93)."""
+    if not time_str: return 0.0
     
-    if shift_type == "SZABAD":
+    sign = 1
+    clean_str = time_str.strip()
+    if clean_str.startswith('-'):
+        sign = -1
+        clean_str = clean_str[1:]
+    elif clean_str.startswith('+'):
+        clean_str = clean_str[1:]
+        
+    try:
+        parts = clean_str.split(':')
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        return sign * (hours + (minutes / 60.0))
+    except:
         return 0.0
+
+def extract_fingera_balance(pdf_file, target_name):
+    """
+    Keresi a nevet, és a hozzá tartozó 'Prenášaný nadčas do nasledujúceho mesiaca' értéket.
+    """
+    final_balance = 0.0
+    found = False
+    raw_text_value = ""
     
-    # Ha ünnepnap VAGY hétvége -> Rövid műszak
-    if is_holiday or date_obj.weekday() >= 5: # 5=Szombat, 6=Vasárnap
-        return round(weekend_hours, 2)
-    else:
-        return round(weekday_hours, 2)
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if not text: continue
+            
+            # Ha megtaláljuk a nevet az oldalon
+            if target_name.lower() in text.lower():
+                found = True
+                
+                # Keresés: "Prenášaný nadčas do nasledujúceho mesiaca" és az utána jövő idő
+                # A PDF szövegében ez gyakran így néz ki: "Prenášaný nadčas do nasledujúceho mesiaca +54:56"
+                # Vagy sortöréssel. A regex megpróbálja elkapni a számot.
+                
+                # 1. Próbálkozás: Közvetlen egyezés
+                match = re.search(r"Prenášaný nadčas do nasledujúceho mesiaca\s*([+-]?\d+:\d+)", text)
+                
+                if match:
+                    raw_text_value = match.group(1)
+                    final_balance = parse_time_str(raw_text_value)
+                    break # Megvan, kiléphetünk
+                
+    return final_balance, raw_text_value, found
+
+# --- TERVEZŐ LOGIKA (Csak a referencia miatt maradt) ---
+def calculate_daily_hours(date_obj, is_holiday, shift_type):
+    weekday_hours = (7 + 40/60) - 0.5  
+    weekend_hours = (6 + 10/60) - 0.5 
+    
+    if shift_type == "SZABAD": return 0.0
+    if is_holiday or date_obj.weekday() >= 5: return round(weekend_hours, 2)
+    else: return round(weekday_hours, 2)
 
 def generate_schedule(year, month, team_name):
-    team_rule = TEAMS[team_name]["weekend_work"]
-    
+    team_rule = TEAMS_RULES[team_name]["weekend_work"]
     num_days = calendar.monthrange(year, month)[1]
     schedule_data = []
-    
     total_hours = 0
     
     for day in range(1, num_days + 1):
         current_date = datetime.date(year, month, day)
         week_num = current_date.isocalendar()[1]
-        weekday = current_date.weekday() # 0=Hétfő, 6=Vasárnap
+        weekday = current_date.weekday()
         is_even_week = (week_num % 2 == 0)
-        
-        # Ünnepnap ellenőrzés
         is_holiday = current_date.strftime("%Y-%m-%d") in HOLIDAYS_2026
         
-        # CIKLUS LOGIKA
-        # 1. Határozzuk meg, hogy ez a hét "Hosszú" (hétvégi munka) vagy "Rövid" (szabad hétvége) a csapatnak
         is_long_week = False
-        if team_rule == "even" and is_even_week:
-            is_long_week = True
-        elif team_rule == "odd" and not is_even_week:
-            is_long_week = True
+        if team_rule == "even" and is_even_week: is_long_week = True
+        elif team_rule == "odd" and not is_even_week: is_long_week = True
             
-        # 2. Napi státusz meghatározása
         status = "Munka"
-        shift_note = "Normál"
+        if not is_long_week and (weekday == 0 or weekday >= 5): status = "SZABAD"
         
-        if is_long_week:
-            # Hosszú hét: H-P munka, Szo-V munka
-            if is_holiday: shift_note = "Ünnepi műszak"
-            elif weekday >= 5: shift_note = "Hétvégi műszak"
-        else:
-            # Rövid hét: Hétfő SZABAD, Szo-V SZABAD
-            if weekday == 0: # Hétfő
-                status = "SZABAD"
-                shift_note = "Pihenőnap (Hétfő)"
-            elif weekday >= 5: # Hétvége
-                status = "SZABAD"
-                shift_note = "Pihenőnap (Hétvége)"
-            elif is_holiday:
-                 # Ha ünnep hétköznapra esik a rövid héten -> Ünnepi munka
-                 shift_note = "Ünnepi műszak"
-        
-        # Óraszám számítás
-        hours = calculate_hours(current_date, is_holiday, status) if status == "Munka" else 0
+        hours = calculate_daily_hours(current_date, is_holiday, status) if status == "Munka" else 0
         total_hours += hours
-        
-        # Magyar nap név
-        day_name = ["Hétfő", "Kedd", "Szerda", "Csütörtök", "Péntek", "Szombat", "Vasárnap"][weekday]
         
         schedule_data.append({
             "Dátum": current_date.strftime("%Y-%m-%d"),
-            "Nap": day_name,
-            "Hét": f"{week_num}. ({'Páros' if is_even_week else 'Páratlan'})",
-            "Státusz": status,
-            "Megjegyzés": shift_note,
-            "Óra": hours
+            "Nap": ["Hétfő", "Kedd", "Szerda", "Csütörtök", "Péntek", "Szombat", "Vasárnap"][weekday],
+            "Tervezett Státusz": status,
+            "Tervezett Óra": hours
         })
         
     return pd.DataFrame(schedule_data), total_hours
 
-# --- STREAMLIT UI ---
-st.title("📅 Prediktív Műszak és Bérszámfejtés Támogató")
-st.write("Válassz csapatot és hónapot a várható munkaórák kiszámításához.")
+# --- UI ---
+st.set_page_config(page_title="Műszak és Fingera", layout="wide")
+st.title("📅 Túlóra Egyenleg és Tervező")
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    selected_team = st.selectbox("Válassz Csapatot:", list(TEAMS.keys()))
-with col2:
-    selected_year = st.number_input("Év", min_value=2025, max_value=2030, value=2026)
-with col3:
-    selected_month = st.selectbox("Hónap", range(1, 13), index=0)
+col_y, col_m = st.columns(2)
+with col_y:
+    selected_year = st.number_input("Év", 2024, 2030, 2025)
+with col_m:
+    selected_month = st.selectbox("Hónap", range(1, 13), index=11)
 
-# Számítás
-df_schedule, total_sum = generate_schedule(selected_year, selected_month, selected_team)
+tab1, tab2 = st.tabs(["👥 Havi Beosztás Terv", "📄 Fingera Egyenleg Ellenőrzés"])
 
-# --- EREDMÉNYEK MEGJELENÍTÉSE ---
-st.divider()
+with tab1:
+    st.subheader("Csapat Terv")
+    team = st.selectbox("Csapat", list(TEAMS_RULES.keys()))
+    df_sched, total = generate_schedule(selected_year, selected_month, team)
+    st.dataframe(df_sched, use_container_width=True, hide_index=True)
 
-# KPI kártyák
-kpi1, kpi2, kpi3 = st.columns(3)
-kpi1.metric("Összes munkaóra (becsült)", f"{total_sum:.2f} óra")
-kpi2.metric("Munkanapok száma", f"{len(df_schedule[df_schedule['Státusz']=='Munka'])} nap")
-kpi3.metric("Szabadnapok száma", f"{len(df_schedule[df_schedule['Státusz']=='SZABAD'])} nap")
-
-# Log Sheet (A te kérésed szerint)
-st.subheader("Részletes Log Sheet")
-st.dataframe(
-    df_schedule,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Óra": st.column_config.NumberColumn("Munkaóra", format="%.2f"),
-        "Státusz": st.column_config.TextColumn("Állapot", width="small"),
-    }
-)
-
-# Letöltés gomb
-csv = df_schedule.to_csv(index=False).encode('utf-8')
-st.download_button(
-    label="Log Sheet Letöltése (CSV)",
-    data=csv,
-    file_name=f'munkaido_terv_{selected_team[:5]}_{selected_year}_{selected_month}.csv',
-    mime='text/csv',
-)
+with tab2:
+    st.subheader("Fingera Záróegyenleg Kinyerése")
+    uploaded_file = st.file_uploader("Töltsd fel a Fingera PDF exportot", type=['pdf'])
+    
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        person_code = st.selectbox("Dolgozó kiválasztása:", list(PEOPLE_DATA.keys()))
+        person_info = PEOPLE_DATA[person_code]
+        st.info(f"Keresett név: **{person_info['fingera_name']}**")
+    
+    if uploaded_file:
+        with st.spinner('Keresés a PDF-ben...'):
+            final_balance, raw_text, found = extract_fingera_balance(uploaded_file, person_info['fingera_name'])
+        
+        st.divider()
+        
+        if found:
+            st.success(f"✅ Adatok megtalálva!")
+            
+            # KIJELZŐK
+            m1, m2 = st.columns(2)
+            
+            m1.metric(
+                label="Fingera Záróegyenleg (Eredeti)", 
+                value=raw_text, 
+                help="Prenášaný nadčas do nasledujúceho mesiaca"
+            )
+            
+            m2.metric(
+                label="Fingera Záróegyenleg (Decimális)", 
+                value=f"{final_balance:+.2f} óra",
+                delta_color="normal" if final_balance >= 0 else "inverse"
+            )
+            
+            if final_balance < 0:
+                st.error(f"⚠️ A következő hónapot {raw_text} mínusszal kezdi!")
+            else:
+                st.success(f"✅ A következő hónapot {raw_text} plusszal kezdi!")
+                
+        else:
+            st.warning("⚠️ Nem találtam meg ezt az embert vagy a záróegyenleget a PDF-ben.")
