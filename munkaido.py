@@ -32,7 +32,7 @@ HOLIDAYS_2026 = [
     "2026-09-01", "2026-09-15", "2026-11-01", "2026-11-17", "2026-12-24", "2026-12-25", "2026-12-26"
 ]
 
-# --- SEGÉDFÜGGVÉNYEK ---
+# --- FÜGGVÉNYEK ---
 def normalize_text(text):
     if not text: return ""
     return ''.join(c for c in unicodedata.normalize('NFD', text)
@@ -56,54 +56,41 @@ def parse_time_str(time_str):
         return 0.0
 
 def get_start_balances(pdf_file):
-    """Csak a NYITÓ egyenlegeket szedi ki a lezárt PDF-ből."""
+    """Nyitó egyenlegek (Múlt hó lezárt)"""
     data = {}
     norm_name_to_code = {normalize_text(v['fingera_name']): k for k, v in PEOPLE_DATA.items()}
-    
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
             if not text: continue
             text_norm = normalize_text(text)
-            
-            # Keresés
             found_codes = [code for norm, code in norm_name_to_code.items() if norm in text_norm]
-            
             for code in found_codes:
-                # Prenášaný nadčas do nasledujúceho mesiaca (Ez volt a záró, ami most nyitó)
                 match = re.search(r"Prenášaný nadčas do nasledujúceho mesiaca\s*([+-]?\d+:\d+)", text)
-                if match:
-                    data[code] = parse_time_str(match.group(1))
+                if match: data[code] = parse_time_str(match.group(1))
     return data
 
 def get_current_worked_hours(pdf_file):
-    """Csak a TÉNYLEGESEN LEDOLGOZOTT időt szedi ki a mostani PDF-ből."""
+    """Jelenleg ledolgozott idő (Aktuális hóközi)"""
     data = {}
     norm_name_to_code = {normalize_text(v['fingera_name']): k for k, v in PEOPLE_DATA.items()}
-    
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
             if not text: continue
             text_norm = normalize_text(text)
-            
             found_codes = [code for norm, code in norm_name_to_code.items() if norm in text_norm]
-            
             for code in found_codes:
-                # Čas v práci (netto)
                 match = re.search(r"Čas v práci \(netto\)\s*(\d+:\d+)", text)
-                if match:
-                    data[code] = parse_time_str(match.group(1))
+                if match: data[code] = parse_time_str(match.group(1))
     return data
 
 def calculate_future_hours(year, month, start_day, team_name):
-    """Kiszámolja a TERVEZETT munkaórákat a hónap HÁTRALÉVŐ részére."""
+    """Tervezett órák a maradék napokra"""
     team_rule = TEAMS_RULES[team_name]["weekend_work"]
     num_days = calendar.monthrange(year, month)[1]
     future_hours = 0
-    
     if start_day > num_days: return 0
-        
     for day in range(start_day, num_days + 1):
         current_date = datetime.date(year, month, day)
         week_num = current_date.isocalendar()[1]
@@ -124,12 +111,10 @@ def calculate_future_hours(year, month, start_day, team_name):
             weekend_len = (6 + 10/60) - 0.5
             if is_holiday or weekday >= 5: day_hours = round(weekend_len, 2)
             else: day_hours = round(weekday_len, 2)
-            
         future_hours += day_hours
     return future_hours
 
 def get_monthly_obligation(year, month):
-    """Kiszámolja a havi kötelezőt."""
     num_days = calendar.monthrange(year, month)[1]
     workdays = 0
     for day in range(1, num_days + 1):
@@ -138,125 +123,134 @@ def get_monthly_obligation(year, month):
             workdays += 1
     return workdays * 8
 
-# --- UI ---
-st.set_page_config(page_title="Műszak Navigátor", layout="wide", page_icon="🧭")
-st.title("🧭 Műszak Navigátor: Két Fájlos Rendszer")
+# --- UI FELÉPÍTÉS ---
+st.set_page_config(page_title="Műszak Navigátor", layout="wide", page_icon="⏱️")
 
-col_y, col_m = st.columns(2)
-with col_y:
+# 1. FEJLÉC ÉS BEÁLLÍTÁSOK
+st.title("⏱️ Műszak és Túlóra Navigátor")
+
+col_params = st.columns(4)
+with col_params[0]:
     selected_year = st.number_input("Év", 2024, 2030, 2026)
-with col_m:
+with col_params[1]:
     selected_month = st.selectbox("Hónap", range(1, 13), index=0)
+with col_params[2]:
+    selected_team = st.selectbox("Csapat (Tervhez)", list(TEAMS_RULES.keys()))
+with col_params[3]:
+    # Havi alap adatok megjelenítése azonnal
+    ideal_hours = calculate_future_hours(selected_year, selected_month, 1, selected_team)
+    norma = get_monthly_obligation(selected_year, selected_month)
+    st.metric("Havi Terv / Norma", f"{ideal_hours:.1f} / {norma} óra")
 
-tab1, tab2 = st.tabs(["📅 Havi Ideális Terv", "🚨 Hóközi Navigátor (Dual File)"])
+st.divider()
 
-# --- TAB 1 ---
-with tab1:
-    st.info("Ideális állapot (ha mindenki végigdolgozza a hónapot).")
-    team_view = st.selectbox("Csapat", list(TEAMS_RULES.keys()))
-    planned = calculate_future_hours(selected_year, selected_month, 1, team_view)
-    obligation = get_monthly_obligation(selected_year, selected_month)
+# 2. KOMPAKT FELTÖLTŐ (Expanderben)
+with st.expander("📂 Fingera Adatok Betöltése (Kattints a lenyitáshoz)", expanded=True):
+    st.caption("A pontos hóközi előrejelzéshez töltsd fel a **Múlt havi (lezárt)** és a **Mai (hóközi)** exportot.")
     
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Havi Kötelező", f"{obligation} óra")
-    c2.metric("Tervezett", f"{planned:.2f} óra")
-    c3.metric("Egyenleg", f"{planned - obligation:.2f} óra")
-
-# --- TAB 2: A MEGOLDÁS ---
-with tab2:
-    st.subheader("Hóközi Ellenőrzés: Múlt + Jelen = Jövő")
-    st.markdown("A pontos számoláshoz **két** fájlra van szükség:")
+    col_f1, col_f2, col_date = st.columns([1, 1, 1])
     
-    col_file1, col_file2 = st.columns(2)
+    with col_f1:
+        file_base = st.file_uploader("1. Múlt havi PDF (Lezárt)", type=['pdf'], key="base")
     
-    # 1. Fájl: Múlt
-    with col_file1:
-        st.markdown("### 1. BÁZIS (Múlt hó)")
-        file_base = st.file_uploader("Töltsd fel a LEZÁRT múlt havi PDF-et", type=['pdf'], key="base")
-        st.caption("Ebből vesszük ki a HOZOTT egyenleget.")
+    with col_f2:
+        file_current = st.file_uploader("2. Mai PDF (Hóközi)", type=['pdf'], key="curr")
         
-    # 2. Fájl: Jelen
-    with col_file2:
-        st.markdown("### 2. AKTUÁLIS (Mai)")
-        file_current = st.file_uploader("Töltsd fel a MAI hóközi PDF-et", type=['pdf'], key="curr")
-        st.caption("Ebből vesszük ki az EDDIG ledolgozott időt.")
+    with col_date:
+        today = datetime.date.today()
+        def_date = today if (today.year == selected_year and today.month == selected_month) else datetime.date(selected_year, selected_month, 15)
+        cut_off_date = st.date_input("Mai dátum (vagy adat állapota):", value=def_date)
+        
+    if not file_base or not file_current:
+        st.info("💡 Tipp: Ha csak a tervezett beosztást akarod látni, nem kell feltöltened semmit. A fájlok feltöltése után itt megjelenik a tényeken alapuló előrejelzés.")
 
-    st.divider()
+# 3. EREDMÉNYEK
+if file_base and file_current:
+    st.subheader(f"📊 Előrejelzés a hónap végére ({selected_year}.{selected_month:02d}.)")
     
-    # Dátum választó
-    today = datetime.date.today()
-    default_date = today if (today.year == selected_year and today.month == selected_month) else datetime.date(selected_year, selected_month, 15)
-    cut_off_date = st.date_input("Meddig tartalmaz adatokat a 2. fájl?", value=default_date)
-
-    if file_base and file_current:
-        with st.spinner('Összefésülés és számolás...'):
-            # Adatok kinyerése külön-külön
-            start_balances = get_start_balances(file_base)
-            worked_current = get_current_worked_hours(file_current)
+    with st.spinner('Adatok összefésülése...'):
+        start_balances = get_start_balances(file_base)
+        worked_current = get_current_worked_hours(file_current)
+        monthly_obligation = get_monthly_obligation(selected_year, selected_month)
+        
+        results = []
+        for code, person_info in PEOPLE_DATA.items():
+            brought = start_balances.get(code, 0.0)
+            worked = worked_current.get(code, 0.0)
             
-            results = []
-            monthly_obligation = get_monthly_obligation(selected_year, selected_month)
+            # A jövőt a "cut_off_date" utáni naptól számoljuk
+            future_plan = calculate_future_hours(selected_year, selected_month, cut_off_date.day + 1, person_info['team'])
             
-            for code, person_info in PEOPLE_DATA.items():
-                # Összefésülés
-                brought = start_balances.get(code, 0.0)
-                worked = worked_current.get(code, 0.0)
-                
-                # Jövő számítása
-                future_plan = calculate_future_hours(selected_year, selected_month, cut_off_date.day + 1, person_info['team'])
-                
-                # Végeredmény
-                end_balance = brought + worked + future_plan - monthly_obligation
-                
-                # Akció
-                status_txt = "OK"
-                action = ""
-                if end_balance < 0:
-                    status_txt = "BAJ"
-                    missing = abs(end_balance)
-                    action = f"+{missing:.1f} óra túlóra kell!"
-                
-                results.append({
-                    "Név": person_info['fingera_name'],
-                    "Hozott (Múlt)": brought,
-                    "Eddig (Tény)": worked,
-                    "Hátralévő (Terv)": future_plan,
-                    "Havi Norma": monthly_obligation,
-                    "Várható Záró": end_balance,
-                    "Teendő": action
-                })
+            end_balance = brought + worked + future_plan - monthly_obligation
             
-            df_res = pd.DataFrame(results)
+            status = "OK"
+            action = "Nincs teendő"
+            if end_balance < 0:
+                status = "BAJ"
+                action = f"+{abs(end_balance):.1f} óra túlóra szükséges!"
             
-            # Grafikon
-            st.subheader("📊 Várható Záróegyenleg")
-            fig, ax = plt.subplots(figsize=(10, 4))
+            results.append({
+                "Név": person_info['fingera_name'],
+                "Hozott": brought,
+                "Eddig": worked,
+                "Jövő": future_plan,
+                "Norma": monthly_obligation,
+                "Várható Záró": end_balance,
+                "Teendő": action
+            })
+            
+        df_res = pd.DataFrame(results)
+        
+        # Grafikon és Táblázat elrendezése
+        col_chart, col_table = st.columns([1, 1.5])
+        
+        with col_chart:
+            # Matplotlib grafikon
+            fig, ax = plt.subplots(figsize=(6, 4))
             colors = ['#28a745' if x >= 0 else '#dc3545' for x in df_res['Várható Záró']]
             bars = ax.bar(df_res['Név'], df_res['Várható Záró'], color=colors)
-            ax.axhline(0, color='black', linewidth=1)
-            plt.xticks(rotation=45, ha='right')
+            ax.axhline(0, color='black', linewidth=0.8)
+            plt.xticks(rotation=45, ha='right', fontsize=9)
+            ax.set_title("Várható Záróegyenleg", fontsize=10)
             
+            # Értékek az oszlopokon
             for bar in bars:
                 yval = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2, yval, f"{yval:.1f}", ha='center', va='bottom' if yval>0 else 'top', fontweight='bold')
+                ax.text(bar.get_x() + bar.get_width()/2, yval, f"{yval:.1f}", 
+                        ha='center', va='bottom' if yval>0 else 'top', fontsize=8, fontweight='bold')
             st.pyplot(fig)
-            
-            # Táblázat
-            st.subheader("📋 Részletes Teendők")
-            def highlight_row(row):
-                return ['background-color: #f8d7da; color: #721c24'] * len(row) if row['Várható Záró'] < 0 else [''] * len(row)
+
+        with col_table:
+            # Stilizált táblázat
+            def highlight_danger(row):
+                if row['Várható Záró'] < 0:
+                    return ['background-color: #ffe6e6; color: #b30000'] * len(row)
+                return [''] * len(row)
 
             st.dataframe(
-                df_res.style.apply(highlight_row, axis=1).format("{:.1f}", subset=["Hozott (Múlt)", "Eddig (Tény)", "Hátralévő (Terv)", "Havi Norma", "Várható Záró"]),
-                use_container_width=True
+                df_res.style.apply(highlight_danger, axis=1).format("{:.1f}", subset=["Hozott", "Eddig", "Jövő", "Norma", "Várható Záró"]),
+                use_container_width=True,
+                height=400
             )
-            
-            if not df_res[df_res['Várható Záró'] < 0].empty:
-                st.error("⚠️ Beavatkozás szükséges! Lásd a piros sorokat.")
-            else:
-                st.success("✅ Mindenki biztonságban van.")
-                
-    elif not file_base and not file_current:
-        st.info("Kérlek töltsd fel mindkét fájlt az elemzéshez!")
-    else:
-        st.warning("Még hiányzik az egyik fájl!")
+        
+        # Figyelmeztető sáv
+        negatives = df_res[df_res['Várható Záró'] < 0]
+        if not negatives.empty:
+            st.error(f"⚠️ **Figyelem!** {len(negatives)} dolgozó mínuszban végezhet!")
+        else:
+            st.success("✅ Mindenki biztonságban van, tartsátok a tervet!")
+
+elif not file_base and not file_current:
+    # Ha nincs fájl, csak a naptárat mutatjuk, hogy lássák a beosztást
+    st.write("---")
+    st.write("**Napi bontású ideális terv (Minta):**")
+    # Egy gyors segédtáblázat generálása a szemléltetéshez
+    days_in_month = calendar.monthrange(selected_year, selected_month)[1]
+    dummy_data = []
+    for d in range(1, days_in_month + 1):
+        date_obj = datetime.date(selected_year, selected_month, d)
+        # Egyszerűsített lekérdezés csak a vizualizációhoz
+        h = calculate_future_hours(selected_year, selected_month, d, selected_team) - calculate_future_hours(selected_year, selected_month, d+1, selected_team)
+        if h > 0:
+            dummy_data.append({"Dátum": str(date_obj), "Nap": date_obj.strftime("%A"), "Óra": h})
+    st.dataframe(pd.DataFrame(dummy_data).T, use_container_width=True)
