@@ -121,53 +121,57 @@ def get_monthly_obligation(year, month):
     return workdays * 8
 
 def generate_excel_report(df, fig_chart):
-    """
-    Ez a függvény hozza létre a "Profi Kimutatást":
-    Excel fájl, benne az adatok ÉS a grafikon képe.
-    """
     output = io.BytesIO()
-    
-    # Excel író indítása (xlsxwriter motorral, mert az tud képet kezelni)
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        # 1. Adatok kiírása
         sheet_name = 'Kimutatás'
         df.to_excel(writer, sheet_name=sheet_name, index=False)
         
         workbook = writer.book
         worksheet = writer.sheets[sheet_name]
         
-        # 2. Formázás (Opcionális: Szélesebb oszlopok)
+        # --- EXCEL FORMÁZÁS (Kerekítés 2 tizedesre) ---
+        num_fmt = workbook.add_format({'num_format': '0.00'})
+        
         worksheet.set_column('A:A', 20) # Név
-        worksheet.set_column('B:F', 12) # Számok
+        worksheet.set_column('B:F', 12, num_fmt) # Számok formázása
         worksheet.set_column('G:G', 30) # Teendő
         
-        # 3. Feltételes formázás (Piros szöveg ha mínuszos a Záró)
-        # Az Excelben az F oszlop a "Várható Záró" (A=0, B=1... F=5)
+        # Feltételes formázás (Piros/Zöld)
         red_format = workbook.add_format({'font_color': '#9C0006', 'bg_color': '#FFC7CE'})
         green_format = workbook.add_format({'font_color': '#006100', 'bg_color': '#C6EFCE'})
         
-        worksheet.conditional_format('F2:F100', {
-            'type': 'cell', 'criteria': '<', 'value': 0, 'format': red_format
-        })
-        worksheet.conditional_format('F2:F100', {
-            'type': 'cell', 'criteria': '>=', 'value': 0, 'format': green_format
-        })
+        worksheet.conditional_format('F2:F100', {'type': 'cell', 'criteria': '<', 'value': 0, 'format': red_format})
+        worksheet.conditional_format('F2:F100', {'type': 'cell', 'criteria': '>=', 'value': 0, 'format': green_format})
 
-        # 4. Grafikon kép mentése memóriába
+        # Grafikon beillesztése
         img_data = io.BytesIO()
         fig_chart.savefig(img_data, format='png', bbox_inches='tight', dpi=100)
         img_data.seek(0)
-        
-        # 5. Kép beillesztése az Excelbe (a táblázat alá vagy mellé)
         worksheet.insert_image('I2', 'grafikon.png', {'image_data': img_data})
         
     output.seek(0)
     return output
 
+# --- SEGÉDFÜGGVÉNY: Csapatnevek generálása ---
+def get_team_labels():
+    labels = {}
+    for team_key in TEAMS_RULES.keys():
+        # Tagok összegyűjtése (pl. VIS, RE, MÁ)
+        members = [code for code, data in PEOPLE_DATA.items() if data['team'] == team_key]
+        members_str = ", ".join(members)
+        # Címke: "1. Csapat (VIS, RE, MÁ...)"
+        label = f"{team_key} ({members_str})"
+        labels[label] = team_key # Visszakereséshez tároljuk a kulcsot
+    return labels
+
 # --- UI FELÉPÍTÉS ---
 st.set_page_config(page_title="Műszak Navigátor", layout="wide", page_icon="⏱️")
 
 st.title("⏱️ Műszak és Túlóra Navigátor")
+
+# Csapat címkék előkészítése
+team_map = get_team_labels()
+team_options = list(team_map.keys())
 
 col_params = st.columns(4)
 with col_params[0]:
@@ -175,11 +179,14 @@ with col_params[0]:
 with col_params[1]:
     selected_month = st.selectbox("Hónap", range(1, 13), index=0)
 with col_params[2]:
-    selected_team = st.selectbox("Csapat (Tervhez)", list(TEAMS_RULES.keys()))
+    # Itt választja ki a felhasználó a bővített nevet
+    selected_label = st.selectbox("Csapat (Tervhez)", team_options)
+    # A háttérben visszakeresem az eredeti kulcsot ("1. Csapat")
+    selected_team = team_map[selected_label]
 with col_params[3]:
     ideal_hours = calculate_future_hours(selected_year, selected_month, 1, selected_team)
     norma = get_monthly_obligation(selected_year, selected_month)
-    st.metric("Havi Terv / Norma", f"{ideal_hours:.1f} / {norma} óra")
+    st.metric("Havi Terv / Norma", f"{ideal_hours:.2f} / {norma} óra")
 
 st.divider()
 
@@ -211,7 +218,8 @@ if file_base and file_current:
             
             action = "Nincs teendő"
             if end_balance < 0:
-                action = f"+{abs(end_balance):.1f} óra túlóra!"
+                # Itt is kerekítünk a kiírásnál
+                action = f"+{abs(end_balance):.2f} óra túlóra!"
             
             results.append({
                 "Név": person_info['fingera_name'],
@@ -223,9 +231,9 @@ if file_base and file_current:
                 "Teendő": action
             })
             
-        df_res = pd.DataFrame(results)
+        # Itt kerekítjük az egész táblázatot 2 tizedesre!
+        df_res = pd.DataFrame(results).round(2)
         
-        # Grafikon generálása (Memóriában tartjuk, hogy menthessük is)
         fig, ax = plt.subplots(figsize=(8, 4))
         colors = ['#28a745' if x >= 0 else '#dc3545' for x in df_res['Várható Záró']]
         bars = ax.bar(df_res['Név'], df_res['Várható Záró'], color=colors)
@@ -234,29 +242,28 @@ if file_base and file_current:
         ax.set_title("Várható Záróegyenleg", fontsize=10)
         for bar in bars:
             yval = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2, yval, f"{yval:.1f}", 
+            # Itt is .2f formátum
+            ax.text(bar.get_x() + bar.get_width()/2, yval, f"{yval:.2f}", 
                     ha='center', va='bottom' if yval>0 else 'top', fontsize=8, fontweight='bold')
         
-        # --- MEGJELENÍTÉS ÉS EXPORT ---
         col_chart, col_table = st.columns([1, 1.5])
         
         with col_chart:
-            st.pyplot(fig) # Képernyőre kirajzolás
+            st.pyplot(fig)
             
         with col_table:
-            # Színezés a képernyőn
             def highlight_danger(row):
                 if row['Várható Záró'] < 0:
                     return ['background-color: #ffe6e6; color: #b30000'] * len(row)
                 return [''] * len(row)
 
+            # Megjelenítésnél is fix 2 tizedes
             st.dataframe(
-                df_res.style.apply(highlight_danger, axis=1).format("{:.1f}", subset=["Hozott", "Eddig", "Jövő", "Norma", "Várható Záró"]),
+                df_res.style.apply(highlight_danger, axis=1).format("{:.2f}", subset=["Hozott", "Eddig", "Jövő", "Norma", "Várható Záró"]),
                 use_container_width=True,
                 height=350
             )
 
-        # --- AZ ÚJ EXPORT GOMB ---
         st.divider()
         excel_data = generate_excel_report(df_res, fig)
         
@@ -264,8 +271,7 @@ if file_base and file_current:
             label="📥 Teljes Kimutatás Letöltése (Excel + Grafikon)",
             data=excel_data,
             file_name=f'vezeto_riport_{selected_year}_{selected_month}.xlsx',
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            help="Ez letölt egy Excel fájlt, amiben benne vannak a számok és a grafikon is beillesztve."
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
 
         if not df_res[df_res['Várható Záró'] < 0].empty:
