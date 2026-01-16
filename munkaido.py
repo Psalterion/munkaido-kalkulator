@@ -56,8 +56,11 @@ def parse_time_str(time_str):
         return 0.0
 
 def get_start_balances(pdf_file):
+    # BIZTONSÁGI LÉPÉS: Visszatekerjük a fájlt az elejére
+    pdf_file.seek(0)
     data = {}
     norm_name_to_code = {normalize_text(v['fingera_name']): k for k, v in PEOPLE_DATA.items()}
+    
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
@@ -70,8 +73,11 @@ def get_start_balances(pdf_file):
     return data
 
 def get_current_worked_hours(pdf_file):
+    # BIZTONSÁGI LÉPÉS: Visszatekerjük a fájlt az elejére
+    pdf_file.seek(0)
     data = {}
     norm_name_to_code = {normalize_text(v['fingera_name']): k for k, v in PEOPLE_DATA.items()}
+    
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
@@ -125,25 +131,20 @@ def generate_excel_report(df, fig_chart):
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         sheet_name = 'Kimutatás'
         df.to_excel(writer, sheet_name=sheet_name, index=False)
-        
         workbook = writer.book
         worksheet = writer.sheets[sheet_name]
         
-        # --- EXCEL FORMÁZÁS (Kerekítés 2 tizedesre) ---
         num_fmt = workbook.add_format({'num_format': '0.00'})
+        worksheet.set_column('A:A', 20) 
+        worksheet.set_column('B:F', 12, num_fmt) 
+        worksheet.set_column('G:G', 30) 
         
-        worksheet.set_column('A:A', 20) # Név
-        worksheet.set_column('B:F', 12, num_fmt) # Számok formázása
-        worksheet.set_column('G:G', 30) # Teendő
-        
-        # Feltételes formázás (Piros/Zöld)
         red_format = workbook.add_format({'font_color': '#9C0006', 'bg_color': '#FFC7CE'})
         green_format = workbook.add_format({'font_color': '#006100', 'bg_color': '#C6EFCE'})
         
         worksheet.conditional_format('F2:F100', {'type': 'cell', 'criteria': '<', 'value': 0, 'format': red_format})
         worksheet.conditional_format('F2:F100', {'type': 'cell', 'criteria': '>=', 'value': 0, 'format': green_format})
 
-        # Grafikon beillesztése
         img_data = io.BytesIO()
         fig_chart.savefig(img_data, format='png', bbox_inches='tight', dpi=100)
         img_data.seek(0)
@@ -152,16 +153,13 @@ def generate_excel_report(df, fig_chart):
     output.seek(0)
     return output
 
-# --- SEGÉDFÜGGVÉNY: Csapatnevek generálása ---
 def get_team_labels():
     labels = {}
     for team_key in TEAMS_RULES.keys():
-        # Tagok összegyűjtése (pl. VIS, RE, MÁ)
         members = [code for code, data in PEOPLE_DATA.items() if data['team'] == team_key]
         members_str = ", ".join(members)
-        # Címke: "1. Csapat (VIS, RE, MÁ...)"
         label = f"{team_key} ({members_str})"
-        labels[label] = team_key # Visszakereséshez tároljuk a kulcsot
+        labels[label] = team_key 
     return labels
 
 # --- UI FELÉPÍTÉS ---
@@ -169,112 +167,132 @@ st.set_page_config(page_title="Műszak Navigátor", layout="wide", page_icon="�
 
 st.title("⏱️ Műszak és Túlóra Navigátor")
 
-# Csapat címkék előkészítése
-team_map = get_team_labels()
-team_options = list(team_map.keys())
+try:
+    team_map = get_team_labels()
+    team_options = list(team_map.keys())
 
-col_params = st.columns(4)
-with col_params[0]:
-    selected_year = st.number_input("Év", 2024, 2030, 2026)
-with col_params[1]:
-    selected_month = st.selectbox("Hónap", range(1, 13), index=0)
-with col_params[2]:
-    # Itt választja ki a felhasználó a bővített nevet
-    selected_label = st.selectbox("Csapat (Tervhez)", team_options)
-    # A háttérben visszakeresem az eredeti kulcsot ("1. Csapat")
-    selected_team = team_map[selected_label]
-with col_params[3]:
-    ideal_hours = calculate_future_hours(selected_year, selected_month, 1, selected_team)
-    norma = get_monthly_obligation(selected_year, selected_month)
-    st.metric("Havi Terv / Norma", f"{ideal_hours:.2f} / {norma} óra")
+    col_params = st.columns(4)
+    with col_params[0]:
+        selected_year = st.number_input("Év", 2024, 2030, 2026)
+    with col_params[1]:
+        selected_month = st.selectbox("Hónap", range(1, 13), index=0)
+    with col_params[2]:
+        selected_label = st.selectbox("Csapat (Tervhez)", team_options)
+        selected_team = team_map[selected_label]
+    with col_params[3]:
+        ideal_hours = calculate_future_hours(selected_year, selected_month, 1, selected_team)
+        norma = get_monthly_obligation(selected_year, selected_month)
+        st.metric("Havi Terv / Norma", f"{ideal_hours:.2f} / {norma} óra")
 
-st.divider()
+    st.divider()
 
-with st.expander("📂 Fingera Adatok Betöltése (Kattints a lenyitáshoz)", expanded=True):
-    col_f1, col_f2, col_date = st.columns([1, 1, 1])
-    with col_f1:
-        file_base = st.file_uploader("1. Múlt havi PDF (Lezárt)", type=['pdf'], key="base")
-    with col_f2:
-        file_current = st.file_uploader("2. Mai PDF (Hóközi)", type=['pdf'], key="curr")
-    with col_date:
-        today = datetime.date.today()
-        def_date = today if (today.year == selected_year and today.month == selected_month) else datetime.date(selected_year, selected_month, 15)
-        cut_off_date = st.date_input("Mai dátum (vagy adat állapota):", value=def_date)
+    with st.expander("📂 Fingera Adatok Betöltése (Kattints a lenyitáshoz)", expanded=True):
+        col_f1, col_f2, col_date = st.columns([1, 1, 1])
+        with col_f1:
+            file_base = st.file_uploader("1. Múlt havi PDF (Lezárt)", type=['pdf'], key="base")
+        with col_f2:
+            file_current = st.file_uploader("2. Mai PDF (Hóközi)", type=['pdf'], key="curr")
+        with col_date:
+            today = datetime.date.today()
+            def_date = today if (today.year == selected_year and today.month == selected_month) else datetime.date(selected_year, selected_month, 15)
+            cut_off_date = st.date_input("Mai dátum (vagy adat állapota):", value=def_date)
 
-if file_base and file_current:
-    st.subheader(f"📊 Előrejelzés ({selected_year}.{selected_month:02d}.)")
-    
-    with st.spinner('Adatok összefésülése...'):
-        start_balances = get_start_balances(file_base)
-        worked_current = get_current_worked_hours(file_current)
-        monthly_obligation = get_monthly_obligation(selected_year, selected_month)
+    if file_base and file_current:
+        st.subheader(f"📊 Előrejelzés ({selected_year}.{selected_month:02d}.)")
         
-        results = []
-        for code, person_info in PEOPLE_DATA.items():
-            brought = start_balances.get(code, 0.0)
-            worked = worked_current.get(code, 0.0)
-            future_plan = calculate_future_hours(selected_year, selected_month, cut_off_date.day + 1, person_info['team'])
-            end_balance = brought + worked + future_plan - monthly_obligation
-            
-            action = "Nincs teendő"
-            if end_balance < 0:
-                # Itt is kerekítünk a kiírásnál
-                action = f"+{abs(end_balance):.2f} óra túlóra!"
-            
-            results.append({
-                "Név": person_info['fingera_name'],
-                "Hozott": brought,
-                "Eddig": worked,
-                "Jövő": future_plan,
-                "Norma": monthly_obligation,
-                "Várható Záró": end_balance,
-                "Teendő": action
-            })
-            
-        # Itt kerekítjük az egész táblázatot 2 tizedesre!
-        df_res = pd.DataFrame(results).round(2)
-        
-        fig, ax = plt.subplots(figsize=(8, 4))
-        colors = ['#28a745' if x >= 0 else '#dc3545' for x in df_res['Várható Záró']]
-        bars = ax.bar(df_res['Név'], df_res['Várható Záró'], color=colors)
-        ax.axhline(0, color='black', linewidth=0.8)
-        plt.xticks(rotation=45, ha='right', fontsize=9)
-        ax.set_title("Várható Záróegyenleg", fontsize=10)
-        for bar in bars:
-            yval = bar.get_height()
-            # Itt is .2f formátum
-            ax.text(bar.get_x() + bar.get_width()/2, yval, f"{yval:.2f}", 
-                    ha='center', va='bottom' if yval>0 else 'top', fontsize=8, fontweight='bold')
-        
-        col_chart, col_table = st.columns([1, 1.5])
-        
-        with col_chart:
-            st.pyplot(fig)
-            
-        with col_table:
-            def highlight_danger(row):
-                if row['Várható Záró'] < 0:
-                    return ['background-color: #ffe6e6; color: #b30000'] * len(row)
-                return [''] * len(row)
+        # BIZTONSÁGI BLOKK: Ha hiba van a fájlokkal, itt elkapjuk
+        try:
+            with st.spinner('Adatok összefésülése...'):
+                start_balances = get_start_balances(file_base)
+                worked_current = get_current_worked_hours(file_current)
+                
+                # Ha üresek az adatok, szólunk
+                if not start_balances and not worked_current:
+                    st.warning("⚠️ Nem találtam adatokat a PDF-ekben. Biztos jó fájlokat töltöttél fel?")
+                else:
+                    monthly_obligation = get_monthly_obligation(selected_year, selected_month)
+                    
+                    results = []
+                    for code, person_info in PEOPLE_DATA.items():
+                        brought = start_balances.get(code, 0.0)
+                        worked = worked_current.get(code, 0.0)
+                        future_plan = calculate_future_hours(selected_year, selected_month, cut_off_date.day + 1, person_info['team'])
+                        end_balance = brought + worked + future_plan - monthly_obligation
+                        
+                        action = "Nincs teendő"
+                        if end_balance < 0:
+                            action = f"+{abs(end_balance):.2f} óra túlóra!"
+                        
+                        results.append({
+                            "Név": person_info['fingera_name'],
+                            "Hozott": brought,
+                            "Eddig": worked,
+                            "Jövő": future_plan,
+                            "Norma": monthly_obligation,
+                            "Várható Záró": end_balance,
+                            "Teendő": action
+                        })
+                        
+                    df_res = pd.DataFrame(results).round(2)
+                    
+                    # Grafikon
+                    fig, ax = plt.subplots(figsize=(8, 4))
+                    colors = ['#28a745' if x >= 0 else '#dc3545' for x in df_res['Várható Záró']]
+                    bars = ax.bar(df_res['Név'], df_res['Várható Záró'], color=colors)
+                    ax.axhline(0, color='black', linewidth=0.8)
+                    plt.xticks(rotation=45, ha='right', fontsize=9)
+                    ax.set_title("Várható Záróegyenleg", fontsize=10)
+                    for bar in bars:
+                        yval = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width()/2, yval, f"{yval:.2f}", 
+                                ha='center', va='bottom' if yval>0 else 'top', fontsize=8, fontweight='bold')
+                    
+                    col_chart, col_table = st.columns([1, 1.5])
+                    with col_chart:
+                        st.pyplot(fig)
+                        # FONTOS: Memória felszabadítás
+                        plt.close(fig)
+                        
+                    with col_table:
+                        def highlight_danger(row):
+                            if row['Várható Záró'] < 0:
+                                return ['background-color: #ffe6e6; color: #b30000'] * len(row)
+                            return [''] * len(row)
 
-            # Megjelenítésnél is fix 2 tizedes
-            st.dataframe(
-                df_res.style.apply(highlight_danger, axis=1).format("{:.2f}", subset=["Hozott", "Eddig", "Jövő", "Norma", "Várható Záró"]),
-                use_container_width=True,
-                height=350
-            )
+                        st.dataframe(
+                            df_res.style.apply(highlight_danger, axis=1).format("{:.2f}", subset=["Hozott", "Eddig", "Jövő", "Norma", "Várható Záró"]),
+                            use_container_width=True,
+                            height=350
+                        )
 
-        st.divider()
-        excel_data = generate_excel_report(df_res, fig)
+                    st.divider()
+                    
+                    # Újra létrehozzuk a grafikont a mentéshez (mert a plt.close bezárta)
+                    fig_save, ax_save = plt.subplots(figsize=(10, 5))
+                    bars_save = ax_save.bar(df_res['Név'], df_res['Várható Záró'], color=colors)
+                    ax_save.axhline(0, color='black')
+                    plt.xticks(rotation=45, ha='right')
+                    for bar in bars_save:
+                         ax_save.text(bar.get_x() + bar.get_width()/2, bar.get_height(), f"{bar.get_height():.2f}", ha='center')
+
+                    excel_data = generate_excel_report(df_res, fig_save)
+                    plt.close(fig_save) # Ezt is bezárjuk
+                    
+                    st.download_button(
+                        label="📥 Teljes Kimutatás Letöltése (Excel + Grafikon)",
+                        data=excel_data,
+                        file_name=f'vezeto_riport_{selected_year}_{selected_month}.xlsx',
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    )
+
+                    if not df_res[df_res['Várható Záró'] < 0].empty:
+                        st.error(f"⚠️ **Figyelem!** {len(df_res[df_res['Várható Záró'] < 0])} dolgozó mínuszban végezhet!")
+                    else:
+                        st.success("✅ Mindenki biztonságban van.")
         
-        st.download_button(
-            label="📥 Teljes Kimutatás Letöltése (Excel + Grafikon)",
-            data=excel_data,
-            file_name=f'vezeto_riport_{selected_year}_{selected_month}.xlsx',
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
+        except Exception as e:
+            st.error(f"❌ Hiba történt a feldolgozás során: {e}")
+            st.info("Próbáld meg frissíteni az oldalt, vagy ellenőrizd a PDF fájlokat.")
 
-        if not df_res[df_res['Várható Záró'] < 0].empty:
-            st.error(f"⚠️ **Figyelem!** {len(df_res[df_res['Várható Záró'] < 0])} dolgozó mínuszban végezhet!")
-        else:
-            st.success("✅ Mindenki biztonságban van.")
+except Exception as e:
+    st.error(f"Kritikus hiba az alkalmazás indításakor: {e}")
