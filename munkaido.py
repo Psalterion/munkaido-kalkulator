@@ -1,12 +1,17 @@
 import streamlit as st
 import pandas as pd
-import datetime
-import calendar
 import pdfplumber
 import re
 import unicodedata
-import matplotlib.pyplot as plt
 import io
+import datetime
+import calendar
+
+# --- KRITIKUS JAVÍTÁS A FEHÉR KÉPERNYŐ ELLEN ---
+# Ezt még a pyplot importálása ELŐTT kell beállítani!
+import matplotlib
+matplotlib.use('Agg') 
+import matplotlib.pyplot as plt
 
 # --- KONFIGURÁCIÓ ---
 TEAMS_RULES = {
@@ -56,11 +61,9 @@ def parse_time_str(time_str):
         return 0.0
 
 def get_start_balances(pdf_file):
-    # BIZTONSÁGI LÉPÉS: Visszatekerjük a fájlt az elejére
     pdf_file.seek(0)
     data = {}
     norm_name_to_code = {normalize_text(v['fingera_name']): k for k, v in PEOPLE_DATA.items()}
-    
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
@@ -73,11 +76,9 @@ def get_start_balances(pdf_file):
     return data
 
 def get_current_worked_hours(pdf_file):
-    # BIZTONSÁGI LÉPÉS: Visszatekerjük a fájlt az elejére
     pdf_file.seek(0)
     data = {}
     norm_name_to_code = {normalize_text(v['fingera_name']): k for k, v in PEOPLE_DATA.items()}
-    
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
@@ -133,18 +134,16 @@ def generate_excel_report(df, fig_chart):
         df.to_excel(writer, sheet_name=sheet_name, index=False)
         workbook = writer.book
         worksheet = writer.sheets[sheet_name]
-        
         num_fmt = workbook.add_format({'num_format': '0.00'})
         worksheet.set_column('A:A', 20) 
         worksheet.set_column('B:F', 12, num_fmt) 
         worksheet.set_column('G:G', 30) 
-        
         red_format = workbook.add_format({'font_color': '#9C0006', 'bg_color': '#FFC7CE'})
         green_format = workbook.add_format({'font_color': '#006100', 'bg_color': '#C6EFCE'})
-        
         worksheet.conditional_format('F2:F100', {'type': 'cell', 'criteria': '<', 'value': 0, 'format': red_format})
         worksheet.conditional_format('F2:F100', {'type': 'cell', 'criteria': '>=', 'value': 0, 'format': green_format})
-
+        
+        # Grafikon mentése
         img_data = io.BytesIO()
         fig_chart.savefig(img_data, format='png', bbox_inches='tight', dpi=100)
         img_data.seek(0)
@@ -164,8 +163,10 @@ def get_team_labels():
 
 # --- UI FELÉPÍTÉS ---
 st.set_page_config(page_title="Műszak Navigátor", layout="wide", page_icon="⏱️")
-
 st.title("⏱️ Műszak és Túlóra Navigátor")
+
+# Ha ez megjelenik, akkor a Streamlit alapjai működnek
+st.write("Rendszer státusz: 🟢 Aktív")
 
 try:
     team_map = get_team_labels()
@@ -200,99 +201,74 @@ try:
     if file_base and file_current:
         st.subheader(f"📊 Előrejelzés ({selected_year}.{selected_month:02d}.)")
         
-        # BIZTONSÁGI BLOKK: Ha hiba van a fájlokkal, itt elkapjuk
-        try:
-            with st.spinner('Adatok összefésülése...'):
-                start_balances = get_start_balances(file_base)
-                worked_current = get_current_worked_hours(file_current)
+        with st.spinner('Adatok feldolgozása...'):
+            start_balances = get_start_balances(file_base)
+            worked_current = get_current_worked_hours(file_current)
+            monthly_obligation = get_monthly_obligation(selected_year, selected_month)
+            
+            if not start_balances and not worked_current:
+                st.warning("⚠️ A fájlok feldolgozása sikeres, de nem találtam bennük adatot. Ellenőrizd a PDF-ek tartalmát!")
+            else:
+                results = []
+                for code, person_info in PEOPLE_DATA.items():
+                    brought = start_balances.get(code, 0.0)
+                    worked = worked_current.get(code, 0.0)
+                    future_plan = calculate_future_hours(selected_year, selected_month, cut_off_date.day + 1, person_info['team'])
+                    end_balance = brought + worked + future_plan - monthly_obligation
+                    
+                    action = "Nincs teendő"
+                    if end_balance < 0:
+                        action = f"+{abs(end_balance):.2f} óra túlóra!"
+                    
+                    results.append({
+                        "Név": person_info['fingera_name'],
+                        "Hozott": brought,
+                        "Eddig": worked,
+                        "Jövő": future_plan,
+                        "Norma": monthly_obligation,
+                        "Várható Záró": end_balance,
+                        "Teendő": action
+                    })
+                    
+                df_res = pd.DataFrame(results).round(2)
                 
-                # Ha üresek az adatok, szólunk
-                if not start_balances and not worked_current:
-                    st.warning("⚠️ Nem találtam adatokat a PDF-ekben. Biztos jó fájlokat töltöttél fel?")
-                else:
-                    monthly_obligation = get_monthly_obligation(selected_year, selected_month)
+                # Grafikon
+                fig, ax = plt.subplots(figsize=(8, 4))
+                colors = ['#28a745' if x >= 0 else '#dc3545' for x in df_res['Várható Záró']]
+                bars = ax.bar(df_res['Név'], df_res['Várható Záró'], color=colors)
+                ax.axhline(0, color='black', linewidth=0.8)
+                plt.xticks(rotation=45, ha='right', fontsize=9)
+                for bar in bars:
+                    yval = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2, yval, f"{yval:.2f}", 
+                            ha='center', va='bottom' if yval>0 else 'top', fontsize=8, fontweight='bold')
+                
+                col_chart, col_table = st.columns([1, 1.5])
+                with col_chart:
+                    st.pyplot(fig)
                     
-                    results = []
-                    for code, person_info in PEOPLE_DATA.items():
-                        brought = start_balances.get(code, 0.0)
-                        worked = worked_current.get(code, 0.0)
-                        future_plan = calculate_future_hours(selected_year, selected_month, cut_off_date.day + 1, person_info['team'])
-                        end_balance = brought + worked + future_plan - monthly_obligation
-                        
-                        action = "Nincs teendő"
-                        if end_balance < 0:
-                            action = f"+{abs(end_balance):.2f} óra túlóra!"
-                        
-                        results.append({
-                            "Név": person_info['fingera_name'],
-                            "Hozott": brought,
-                            "Eddig": worked,
-                            "Jövő": future_plan,
-                            "Norma": monthly_obligation,
-                            "Várható Záró": end_balance,
-                            "Teendő": action
-                        })
-                        
-                    df_res = pd.DataFrame(results).round(2)
-                    
-                    # Grafikon
-                    fig, ax = plt.subplots(figsize=(8, 4))
-                    colors = ['#28a745' if x >= 0 else '#dc3545' for x in df_res['Várható Záró']]
-                    bars = ax.bar(df_res['Név'], df_res['Várható Záró'], color=colors)
-                    ax.axhline(0, color='black', linewidth=0.8)
-                    plt.xticks(rotation=45, ha='right', fontsize=9)
-                    ax.set_title("Várható Záróegyenleg", fontsize=10)
-                    for bar in bars:
-                        yval = bar.get_height()
-                        ax.text(bar.get_x() + bar.get_width()/2, yval, f"{yval:.2f}", 
-                                ha='center', va='bottom' if yval>0 else 'top', fontsize=8, fontweight='bold')
-                    
-                    col_chart, col_table = st.columns([1, 1.5])
-                    with col_chart:
-                        st.pyplot(fig)
-                        # FONTOS: Memória felszabadítás
-                        plt.close(fig)
-                        
-                    with col_table:
-                        def highlight_danger(row):
-                            if row['Várható Záró'] < 0:
-                                return ['background-color: #ffe6e6; color: #b30000'] * len(row)
-                            return [''] * len(row)
+                with col_table:
+                    def highlight_danger(row):
+                        if row['Várható Záró'] < 0:
+                            return ['background-color: #ffe6e6; color: #b30000'] * len(row)
+                        return [''] * len(row)
 
-                        st.dataframe(
-                            df_res.style.apply(highlight_danger, axis=1).format("{:.2f}", subset=["Hozott", "Eddig", "Jövő", "Norma", "Várható Záró"]),
-                            use_container_width=True,
-                            height=350
-                        )
-
-                    st.divider()
-                    
-                    # Újra létrehozzuk a grafikont a mentéshez (mert a plt.close bezárta)
-                    fig_save, ax_save = plt.subplots(figsize=(10, 5))
-                    bars_save = ax_save.bar(df_res['Név'], df_res['Várható Záró'], color=colors)
-                    ax_save.axhline(0, color='black')
-                    plt.xticks(rotation=45, ha='right')
-                    for bar in bars_save:
-                         ax_save.text(bar.get_x() + bar.get_width()/2, bar.get_height(), f"{bar.get_height():.2f}", ha='center')
-
-                    excel_data = generate_excel_report(df_res, fig_save)
-                    plt.close(fig_save) # Ezt is bezárjuk
-                    
-                    st.download_button(
-                        label="📥 Teljes Kimutatás Letöltése (Excel + Grafikon)",
-                        data=excel_data,
-                        file_name=f'vezeto_riport_{selected_year}_{selected_month}.xlsx',
-                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                    st.dataframe(
+                        df_res.style.apply(highlight_danger, axis=1).format("{:.2f}", subset=["Hozott", "Eddig", "Jövő", "Norma", "Várható Záró"]),
+                        use_container_width=True,
+                        height=350
                     )
 
-                    if not df_res[df_res['Várható Záró'] < 0].empty:
-                        st.error(f"⚠️ **Figyelem!** {len(df_res[df_res['Várható Záró'] < 0])} dolgozó mínuszban végezhet!")
-                    else:
-                        st.success("✅ Mindenki biztonságban van.")
-        
-        except Exception as e:
-            st.error(f"❌ Hiba történt a feldolgozás során: {e}")
-            st.info("Próbáld meg frissíteni az oldalt, vagy ellenőrizd a PDF fájlokat.")
+                # Excel Export
+                excel_data = generate_excel_report(df_res, fig)
+                st.download_button(
+                    label="📥 Teljes Kimutatás Letöltése (Excel)",
+                    data=excel_data,
+                    file_name=f'vezeto_riport_{selected_year}_{selected_month}.xlsx',
+                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                )
+                
+                plt.close(fig) # Takarítás
 
 except Exception as e:
-    st.error(f"Kritikus hiba az alkalmazás indításakor: {e}")
+    st.error(f"Hiba történt: {e}")
