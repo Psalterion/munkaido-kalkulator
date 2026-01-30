@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # --- FŐ CÍM ---
-st.title("Műszak Navigátor 2.0")
+st.title("Műszak Navigátor 2.1 (Spolu Javítás)")
 
 # --- KONFIGURÁCIÓ ---
 TEAMS_RULES = {
@@ -78,6 +78,7 @@ def get_start_balances(pdf_file):
     return data
 
 def get_current_worked_hours(pdf_file):
+    # JAVÍTÁS: Most már a "Spolu" mezőt keressük, nem a Netto-t!
     pdf_file.seek(0)
     data = {}
     norm_name_to_code = {normalize_text(v['fingera_name']): k for k, v in PEOPLE_DATA.items()}
@@ -88,8 +89,11 @@ def get_current_worked_hours(pdf_file):
             text_norm = normalize_text(text)
             found_codes = [code for norm, code in norm_name_to_code.items() if norm in text_norm]
             for code in found_codes:
-                match = re.search(r"Čas v práci \(netto\)\s*(\d+:\d+)", text)
-                if match: data[code] = parse_time_str(match.group(1))
+                # Regex csere: "Spolu" értéket keressük
+                # A Spolu általában a sor végén vagy közepén van, egy időbélyeggel
+                match = re.search(r"Spolu\s*(\d+:\d+)", text)
+                if match: 
+                    data[code] = parse_time_str(match.group(1))
     return data
 
 def calculate_future_hours(year, month, start_day, team_name):
@@ -182,25 +186,42 @@ try:
 
     if f1 and f2:
         st.subheader("Eredmények")
-        with st.spinner('Számolás...'):
+        with st.spinner('Számolás (Most már a "Spolu" mezővel)...'):
             start_bal = get_start_balances(f1)
-            curr_work = get_current_worked_hours(f2)
+            # Figyelem: curr_work most már a "Spolu" értéket tartalmazza!
+            curr_spolu = get_current_worked_hours(f2)
             
             # Adatok feldolgozása
             results = []
             norma = get_monthly_obligation(selected_year, selected_month)
             
             for code, info in PEOPLE_DATA.items():
-                b = start_bal.get(code, 0.0)
-                w = curr_work.get(code, 0.0)
+                brought = start_bal.get(code, 0.0)
+                spolu_value = curr_spolu.get(code, 0.0)
+                
+                # MATEMATIKAI JAVÍTÁS:
+                # Mivel a "Spolu" már tartalmazza a Hozott (brought) értéket is,
+                # az "Eddig" (Tényleges havi teljesítmény) kiszámolásához ki kell vonnunk a hozottat.
+                # Így a táblázatban az "Eddig" oszlop a valós havi munkát+szabit mutatja.
+                actual_month_work_and_vacation = spolu_value - brought
+                
+                # Jövőbeni terv
                 fut = calculate_future_hours(selected_year, selected_month, cut_date.day + 1, info['team'])
-                end = b + w + fut - norma
+                
+                # Várható Záró Képlet:
+                # Spolu (ami Hozott+Munka+Szabi) + Jövő Terv - Norma
+                end = spolu_value + fut - norma
+                
                 act = f"+{abs(end):.2f} óra!" if end < 0 else ""
                 
                 results.append({
                     "Név": info['fingera_name'],
-                    "Hozott": b, "Eddig": w, "Jövő": fut, 
-                    "Norma": norma, "Várható Záró": end, "Teendő": act
+                    "Hozott": brought, 
+                    "Eddig": actual_month_work_and_vacation, # Javított érték
+                    "Jövő": fut, 
+                    "Norma": norma, 
+                    "Várható Záró": end, 
+                    "Teendő": act
                 })
             
             df = pd.DataFrame(results).round(2)
