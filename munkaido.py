@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # --- FŐ CÍM ---
-st.title("Műszak Navigátor 2.1 (Spolu Javítás)")
+st.title("Műszak Navigátor 2.3 (Spolu Javítva)")
 
 # --- KONFIGURÁCIÓ ---
 TEAMS_RULES = {
@@ -78,22 +78,28 @@ def get_start_balances(pdf_file):
     return data
 
 def get_current_worked_hours(pdf_file):
-    # JAVÍTÁS: Most már a "Spolu" mezőt keressük, nem a Netto-t!
+    # JAVÍTÁS: A Spolu értékek közül a legnagyobbat keressük, ez a havi összeg
     pdf_file.seek(0)
     data = {}
     norm_name_to_code = {normalize_text(v['fingera_name']): k for k, v in PEOPLE_DATA.items()}
+    
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
             if not text: continue
             text_norm = normalize_text(text)
             found_codes = [code for norm, code in norm_name_to_code.items() if norm in text_norm]
+            
             for code in found_codes:
-                # Regex csere: "Spolu" értéket keressük
-                # A Spolu általában a sor végén vagy közepén van, egy időbélyeggel
-                match = re.search(r"Spolu\s*(\d+:\d+)", text)
-                if match: 
-                    data[code] = parse_time_str(match.group(1))
+                # Keresés: "Spolu" utáni időkód
+                matches = re.findall(r"Spolu\s*(\d+:\d+)", text)
+                
+                if matches:
+                    values = [parse_time_str(m) for m in matches]
+                    # A legnagyobb értéket vesszük (a napi összesítők kisebbek)
+                    max_val = max(values)
+                    data[code] = max_val
+                    
     return data
 
 def calculate_future_hours(year, month, start_day, team_name):
@@ -186,12 +192,10 @@ try:
 
     if f1 and f2:
         st.subheader("Eredmények")
-        with st.spinner('Számolás (Most már a "Spolu" mezővel)...'):
+        with st.spinner('Számolás (Spolu javítva)...'):
             start_bal = get_start_balances(f1)
-            # Figyelem: curr_work most már a "Spolu" értéket tartalmazza!
             curr_spolu = get_current_worked_hours(f2)
             
-            # Adatok feldolgozása
             results = []
             norma = get_monthly_obligation(selected_year, selected_month)
             
@@ -199,25 +203,23 @@ try:
                 brought = start_bal.get(code, 0.0)
                 spolu_value = curr_spolu.get(code, 0.0)
                 
-                # MATEMATIKAI JAVÍTÁS:
-                # Mivel a "Spolu" már tartalmazza a Hozott (brought) értéket is,
-                # az "Eddig" (Tényleges havi teljesítmény) kiszámolásához ki kell vonnunk a hozottat.
-                # Így a táblázatban az "Eddig" oszlop a valós havi munkát+szabit mutatja.
-                actual_month_work_and_vacation = spolu_value - brought
+                # --- JAVÍTOTT MATEK ---
+                # 1. Eddig = Spolu (Mert ez a havi munka + szabi)
+                # NEM vonjuk le belőle a hozottat!
+                worked_so_far = spolu_value
                 
-                # Jövőbeni terv
+                # 2. Jövőbeni terv
                 fut = calculate_future_hours(selected_year, selected_month, cut_date.day + 1, info['team'])
                 
-                # Várható Záró Képlet:
-                # Spolu (ami Hozott+Munka+Szabi) + Jövő Terv - Norma
-                end = spolu_value + fut - norma
+                # 3. Záró = Hozott + (Havi munka + Szabi) + Jövő - Norma
+                end = brought + worked_so_far + fut - norma
                 
                 act = f"+{abs(end):.2f} óra!" if end < 0 else ""
                 
                 results.append({
                     "Név": info['fingera_name'],
                     "Hozott": brought, 
-                    "Eddig": actual_month_work_and_vacation, # Javított érték
+                    "Eddig": worked_so_far, # Most már nem lesz negatív
                     "Jövő": fut, 
                     "Norma": norma, 
                     "Várható Záró": end, 
@@ -226,7 +228,6 @@ try:
             
             df = pd.DataFrame(results).round(2)
             
-            # Grafikon
             fig, ax = plt.subplots(figsize=(8, 4))
             cols = ['green' if x >= 0 else 'red' for x in df['Várható Záró']]
             bars = ax.bar(df['Név'], df['Várható Záró'], color=cols)
@@ -237,7 +238,6 @@ try:
             st.pyplot(fig)
             st.dataframe(df)
             
-            # Excel
             excel = generate_excel_report(df, fig)
             st.download_button("📥 Excel Letöltése", excel, "riport.xlsx")
             
