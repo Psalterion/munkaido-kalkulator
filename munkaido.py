@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # --- FŐ CÍM ---
-st.title("Műszak Navigátor 2.3 (Spolu Javítva)")
+st.title("Műszak Navigátor 3.0 (Végleges Matek)")
 
 # --- KONFIGURÁCIÓ ---
 TEAMS_RULES = {
@@ -78,7 +78,6 @@ def get_start_balances(pdf_file):
     return data
 
 def get_current_worked_hours(pdf_file):
-    # JAVÍTÁS: A Spolu értékek közül a legnagyobbat keressük, ez a havi összeg
     pdf_file.seek(0)
     data = {}
     norm_name_to_code = {normalize_text(v['fingera_name']): k for k, v in PEOPLE_DATA.items()}
@@ -91,14 +90,17 @@ def get_current_worked_hours(pdf_file):
             found_codes = [code for norm, code in norm_name_to_code.items() if norm in text_norm]
             
             for code in found_codes:
-                # Keresés: "Spolu" utáni időkód
-                matches = re.findall(r"Spolu\s*(\d+:\d+)", text)
+                matches = re.findall(r"Spolu\s*([+-]?\d+:\d+)", text)
                 
                 if matches:
                     values = [parse_time_str(m) for m in matches]
-                    # A legnagyobb értéket vesszük (a napi összesítők kisebbek)
                     max_val = max(values)
-                    data[code] = max_val
+                    
+                    # Ha egy dolgozó több oldalon is szerepel, a valós maximumot tartjuk meg
+                    if code in data:
+                        data[code] = max(data[code], max_val)
+                    else:
+                        data[code] = max_val
                     
     return data
 
@@ -192,7 +194,7 @@ try:
 
     if f1 and f2:
         st.subheader("Eredmények")
-        with st.spinner('Számolás (Spolu javítva)...'):
+        with st.spinner('Kalkuláció folyamatban...'):
             start_bal = get_start_balances(f1)
             curr_spolu = get_current_worked_hours(f2)
             
@@ -203,23 +205,30 @@ try:
                 brought = start_bal.get(code, 0.0)
                 spolu_value = curr_spolu.get(code, 0.0)
                 
-                # --- JAVÍTOTT MATEK ---
-                # 1. Eddig = Spolu (Mert ez a havi munka + szabi)
-                # NEM vonjuk le belőle a hozottat!
-                worked_so_far = spolu_value
+                # --- VÉGLEGES MATEMATIKA ---
+                # A kiolvasott "Spolu" magában foglalja a hozott órákat, a munkát és a szabadságot is.
+                
+                # 1. "Eddig": Tényleges tárgyhavi munka (Spolu - Hozott)
+                if spolu_value == 0:
+                    worked_so_far = 0.0
+                else:
+                    worked_so_far = max(0.0, spolu_value - brought)
                 
                 # 2. Jövőbeni terv
                 fut = calculate_future_hours(selected_year, selected_month, cut_date.day + 1, info['team'])
                 
-                # 3. Záró = Hozott + (Havi munka + Szabi) + Jövő - Norma
-                end = brought + worked_so_far + fut - norma
+                # 3. Várható Záró = Teljes Eddigi (Spolu) + Jövő - Norma
+                if spolu_value == 0:
+                     end = brought + fut - norma
+                else:
+                     end = spolu_value + fut - norma
                 
                 act = f"+{abs(end):.2f} óra!" if end < 0 else ""
                 
                 results.append({
                     "Név": info['fingera_name'],
                     "Hozott": brought, 
-                    "Eddig": worked_so_far, # Most már nem lesz negatív
+                    "Eddig": worked_so_far,
                     "Jövő": fut, 
                     "Norma": norma, 
                     "Várható Záró": end, 
