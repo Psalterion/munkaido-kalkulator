@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # --- FŐ CÍM ---
-st.title("Műszak Navigátor 3.0 (Végleges Matek)")
+st.title("Műszak Navigátor 3.2 (Rövid Péntek - 5:50 kezdéssel)")
 
 # --- KONFIGURÁCIÓ ---
 TEAMS_RULES = {
@@ -96,7 +96,6 @@ def get_current_worked_hours(pdf_file):
                     values = [parse_time_str(m) for m in matches]
                     max_val = max(values)
                     
-                    # Ha egy dolgozó több oldalon is szerepel, a valós maximumot tartjuk meg
                     if code in data:
                         data[code] = max(data[code], max_val)
                     else:
@@ -104,11 +103,12 @@ def get_current_worked_hours(pdf_file):
                     
     return data
 
-def calculate_future_hours(year, month, start_day, team_name):
+def calculate_future_hours(year, month, start_day, team_name, is_short_friday=False):
     team_rule = TEAMS_RULES[team_name]["weekend_work"]
     num_days = calendar.monthrange(year, month)[1]
     future_hours = 0
     if start_day > num_days: return 0
+    
     for day in range(start_day, num_days + 1):
         current_date = datetime.date(year, month, day)
         week_num = current_date.isocalendar()[1]
@@ -127,8 +127,15 @@ def calculate_future_hours(year, month, start_day, team_name):
         if status == "Munka":
             weekday_len = (7 + 40/60) - 0.5
             weekend_len = (6 + 10/60) - 0.5
-            if is_holiday or weekday >= 5: day_hours = round(weekend_len, 2)
-            else: day_hours = round(weekday_len, 2)
+            short_friday_len = (6 + 40/60) - 0.5 # 5:50 - 12:30 mínusz 30p szünet
+            
+            if is_holiday or weekday >= 5: 
+                day_hours = round(weekend_len, 2)
+            elif weekday == 4 and is_short_friday: 
+                day_hours = round(short_friday_len, 2)
+            else: 
+                day_hours = round(weekday_len, 2)
+                
         future_hours += day_hours
     return future_hours
 
@@ -180,10 +187,18 @@ try:
     col1, col2 = st.columns(2)
     with col1:
         selected_year = st.number_input("Év", 2024, 2030, 2026)
-        selected_month = st.selectbox("Hónap", range(1, 13), index=0)
+        current_month = datetime.date.today().month
+        selected_month = st.selectbox("Hónap", range(1, 13), index=current_month - 1)
+        
     with col2:
         selected_label = st.selectbox("Csapat", list(team_map.keys()))
         selected_team = team_map[selected_label]
+        
+    short_friday_enabled = st.checkbox(
+        "✨ Rövidített Péntek (Munkavégzés 5:50 - 12:30)", 
+        value=False, 
+        help="Ha bekapcsolod, minden jövőbeli péntek 6.17 nettó munkaórával fog számolódni."
+    )
         
     st.divider()
     
@@ -205,19 +220,13 @@ try:
                 brought = start_bal.get(code, 0.0)
                 spolu_value = curr_spolu.get(code, 0.0)
                 
-                # --- VÉGLEGES MATEMATIKA ---
-                # A kiolvasott "Spolu" magában foglalja a hozott órákat, a munkát és a szabadságot is.
-                
-                # 1. "Eddig": Tényleges tárgyhavi munka (Spolu - Hozott)
                 if spolu_value == 0:
                     worked_so_far = 0.0
                 else:
                     worked_so_far = max(0.0, spolu_value - brought)
                 
-                # 2. Jövőbeni terv
-                fut = calculate_future_hours(selected_year, selected_month, cut_date.day + 1, info['team'])
+                fut = calculate_future_hours(selected_year, selected_month, cut_date.day + 1, info['team'], short_friday_enabled)
                 
-                # 3. Várható Záró = Teljes Eddigi (Spolu) + Jövő - Norma
                 if spolu_value == 0:
                      end = brought + fut - norma
                 else:
