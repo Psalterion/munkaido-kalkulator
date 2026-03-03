@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # --- FŐ CÍM ---
-st.title("Műszak Navigátor 3.2 (Rövid Péntek - 5:50 kezdéssel)")
+st.title("Műszak Navigátor 3.3 (Hónapforduló Biztos)")
 
 # --- KONFIGURÁCIÓ ---
 TEAMS_RULES = {
@@ -90,16 +90,19 @@ def get_current_worked_hours(pdf_file):
             found_codes = [code for norm, code in norm_name_to_code.items() if norm in text_norm]
             
             for code in found_codes:
-                matches = re.findall(r"Spolu\s*([+-]?\d+:\d+)", text)
+                if code not in data:
+                    data[code] = {'spolu': 0.0, 'rec_brought': 0.0}
                 
+                # 1. Spolu érték keresése
+                matches = re.findall(r"Spolu\s*([+-]?\d+:\d+)", text)
                 if matches:
                     values = [parse_time_str(m) for m in matches]
-                    max_val = max(values)
-                    
-                    if code in data:
-                        data[code] = max(data[code], max_val)
-                    else:
-                        data[code] = max_val
+                    data[code]['spolu'] = max(data[code]['spolu'], max(values))
+                
+                # 2. Hozott érték felismerése a hóközi PDF-ben
+                m_brought = re.search(r"Prenesený nadčas z minulého mesiaca\s*([+-]?\d+:\d+)", text)
+                if m_brought:
+                    data[code]['rec_brought'] = parse_time_str(m_brought.group(1))
                     
     return data
 
@@ -174,92 +177,4 @@ def generate_excel_report(df, fig_chart):
 def get_team_labels():
     labels = {}
     for team_key in TEAMS_RULES.keys():
-        members = [code for code, data in PEOPLE_DATA.items() if data['team'] == team_key]
-        members_str = ", ".join(members)
-        label = f"{team_key} ({members_str})"
-        labels[label] = team_key 
-    return labels
-
-# --- MAIN LOGIC ---
-try:
-    team_map = get_team_labels()
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        selected_year = st.number_input("Év", 2024, 2030, 2026)
-        current_month = datetime.date.today().month
-        selected_month = st.selectbox("Hónap", range(1, 13), index=current_month - 1)
-        
-    with col2:
-        selected_label = st.selectbox("Csapat", list(team_map.keys()))
-        selected_team = team_map[selected_label]
-        
-    short_friday_enabled = st.checkbox(
-        "✨ Rövidített Péntek (Munkavégzés 5:50 - 12:30)", 
-        value=False, 
-        help="Ha bekapcsolod, minden jövőbeli péntek 6.17 nettó munkaórával fog számolódni."
-    )
-        
-    st.divider()
-    
-    with st.expander("📂 Fájlfeltöltés", expanded=True):
-        f1 = st.file_uploader("1. Múlt havi (Zárt) PDF", type=['pdf'], key="b")
-        f2 = st.file_uploader("2. Mai (Hóközi) PDF", type=['pdf'], key="c")
-        cut_date = st.date_input("Mai dátum:", value=datetime.date.today())
-
-    if f1 and f2:
-        st.subheader("Eredmények")
-        with st.spinner('Kalkuláció folyamatban...'):
-            start_bal = get_start_balances(f1)
-            curr_spolu = get_current_worked_hours(f2)
-            
-            results = []
-            norma = get_monthly_obligation(selected_year, selected_month)
-            
-            for code, info in PEOPLE_DATA.items():
-                brought = start_bal.get(code, 0.0)
-                spolu_value = curr_spolu.get(code, 0.0)
-                
-                if spolu_value == 0:
-                    worked_so_far = 0.0
-                else:
-                    worked_so_far = max(0.0, spolu_value - brought)
-                
-                fut = calculate_future_hours(selected_year, selected_month, cut_date.day + 1, info['team'], short_friday_enabled)
-                
-                if spolu_value == 0:
-                     end = brought + fut - norma
-                else:
-                     end = spolu_value + fut - norma
-                
-                act = f"+{abs(end):.2f} óra!" if end < 0 else ""
-                
-                results.append({
-                    "Név": info['fingera_name'],
-                    "Hozott": brought, 
-                    "Eddig": worked_so_far,
-                    "Jövő": fut, 
-                    "Norma": norma, 
-                    "Várható Záró": end, 
-                    "Teendő": act
-                })
-            
-            df = pd.DataFrame(results).round(2)
-            
-            fig, ax = plt.subplots(figsize=(8, 4))
-            cols = ['green' if x >= 0 else 'red' for x in df['Várható Záró']]
-            bars = ax.bar(df['Név'], df['Várható Záró'], color=cols)
-            ax.axhline(0, color='black')
-            plt.xticks(rotation=45, ha='right')
-            ax.bar_label(bars, fmt='%.2f')
-            
-            st.pyplot(fig)
-            st.dataframe(df)
-            
-            excel = generate_excel_report(df, fig)
-            st.download_button("📥 Excel Letöltése", excel, "riport.xlsx")
-            
-            plt.close(fig)
-
-except Exception as e:
-    st.error(f"Hiba: {e}")
+        members = [code for code, data in PEOPLE_DATA.items() if data['team'] == team
