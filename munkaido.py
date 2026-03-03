@@ -177,4 +177,4 @@ def generate_excel_report(df, fig_chart):
 def get_team_labels():
     labels = {}
     for team_key in TEAMS_RULES.keys():
-        members = [code for code, data in PEOPLE_DATA.items() if data['team'] == team
+        members = [code for code, data in PEOPLE_DATA.items() if data['team'] == team_key]
