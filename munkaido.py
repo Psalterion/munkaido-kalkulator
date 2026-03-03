@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # --- FŐ CÍM ---
-st.title("Műszak Navigátor 3.2 (Rövid Péntek - 5:50 kezdéssel)")
+st.title("Műszak Navigátor 3.4 (Átlátható Matematika)")
 
 # --- KONFIGURÁCIÓ ---
 TEAMS_RULES = {
@@ -36,7 +36,8 @@ PEOPLE_DATA = {
 HOLIDAYS_2026 = [
     "2026-01-01", "2026-01-06", "2026-04-03", "2026-04-06", 
     "2026-05-01", "2026-05-08", "2026-07-05", "2026-08-29", 
-    "2026-09-01", "2026-09-15", "2026-11-01", "2026-11-17", "2026-12-24", "2026-12-25", "2026-12-26"
+    "2026-09-01", "2026-09-15", "2026-11-01", "2026-11-17", 
+    "2026-12-24", "2026-12-25", "2026-12-26"
 ]
 
 # --- FÜGGVÉNYEK ---
@@ -90,16 +91,17 @@ def get_current_worked_hours(pdf_file):
             found_codes = [code for norm, code in norm_name_to_code.items() if norm in text_norm]
             
             for code in found_codes:
-                matches = re.findall(r"Spolu\s*([+-]?\d+:\d+)", text)
+                if code not in data:
+                    data[code] = {'spolu': 0.0, 'rec_brought': 0.0}
                 
+                matches = re.findall(r"Spolu\s*([+-]?\d+:\d+)", text)
                 if matches:
                     values = [parse_time_str(m) for m in matches]
-                    max_val = max(values)
-                    
-                    if code in data:
-                        data[code] = max(data[code], max_val)
-                    else:
-                        data[code] = max_val
+                    data[code]['spolu'] = max(data[code]['spolu'], max(values))
+                
+                m_brought = re.search(r"Prenesený nadčas z minulého mesiaca\s*([+-]?\d+:\d+)", text)
+                if m_brought:
+                    data[code]['rec_brought'] = parse_time_str(m_brought.group(1))
                     
     return data
 
@@ -127,7 +129,7 @@ def calculate_future_hours(year, month, start_day, team_name, is_short_friday=Fa
         if status == "Munka":
             weekday_len = (7 + 40/60) - 0.5
             weekend_len = (6 + 10/60) - 0.5
-            short_friday_len = (6 + 40/60) - 0.5 # 5:50 - 12:30 mínusz 30p szünet
+            short_friday_len = (6 + 40/60) - 0.5 
             
             if is_holiday or weekday >= 5: 
                 day_hours = round(weekend_len, 2)
@@ -171,13 +173,16 @@ def generate_excel_report(df, fig_chart):
     output.seek(0)
     return output
 
+# --- BIZTONSÁGOS CSAPAT-LEKÉRDEZŐ (Nincs SyntaxError) ---
 def get_team_labels():
     labels = {}
-    for team_key in TEAMS_RULES.keys():
-        members = [code for code, data in PEOPLE_DATA.items() if data['team'] == team_key]
-        members_str = ", ".join(members)
-        label = f"{team_key} ({members_str})"
-        labels[label] = team_key 
+    for t_key in TEAMS_RULES.keys():
+        m_list = []
+        for code, data in PEOPLE_DATA.items():
+            if data['team'] == t_key:
+                m_list.append(code)
+        m_str = ", ".join(m_list)
+        labels[f"{t_key} ({m_str})"] = t_key 
     return labels
 
 # --- MAIN LOGIC ---
@@ -196,8 +201,7 @@ try:
         
     short_friday_enabled = st.checkbox(
         "✨ Rövidített Péntek (Munkavégzés 5:50 - 12:30)", 
-        value=False, 
-        help="Ha bekapcsolod, minden jövőbeli péntek 6.17 nettó munkaórával fog számolódni."
+        value=False
     )
         
     st.divider()
@@ -214,23 +218,24 @@ try:
             curr_spolu = get_current_worked_hours(f2)
             
             results = []
+            debug_data = []
             norma = get_monthly_obligation(selected_year, selected_month)
             
             for code, info in PEOPLE_DATA.items():
                 brought = start_bal.get(code, 0.0)
-                spolu_value = curr_spolu.get(code, 0.0)
                 
-                if spolu_value == 0:
+                curr_data = curr_spolu.get(code, {'spolu': 0.0, 'rec_brought': 0.0})
+                spolu_value = curr_data['spolu']
+                rec_brought = curr_data['rec_brought']
+                
+                # --- AZ ÚJ, ÁTLÁTHATÓ MATEMATIKA ---
+                worked_so_far = spolu_value - rec_brought
+                if worked_so_far < 0:
                     worked_so_far = 0.0
-                else:
-                    worked_so_far = max(0.0, spolu_value - brought)
                 
                 fut = calculate_future_hours(selected_year, selected_month, cut_date.day + 1, info['team'], short_friday_enabled)
                 
-                if spolu_value == 0:
-                     end = brought + fut - norma
-                else:
-                     end = spolu_value + fut - norma
+                end = brought + worked_so_far + fut - norma
                 
                 act = f"+{abs(end):.2f} óra!" if end < 0 else ""
                 
@@ -243,8 +248,17 @@ try:
                     "Várható Záró": end, 
                     "Teendő": act
                 })
+                
+                debug_data.append({
+                    "Név": info['fingera_name'],
+                    "Zárt Hozott (PDF1)": brought,
+                    "Hóközi Spolu (PDF2)": spolu_value,
+                    "Hóközi Hozott (PDF2)": rec_brought,
+                    "Eddig (Kiszámolt tárgyhavi)": worked_so_far
+                })
             
             df = pd.DataFrame(results).round(2)
+            df_debug = pd.DataFrame(debug_data).round(2)
             
             fig, ax = plt.subplots(figsize=(8, 4))
             cols = ['green' if x >= 0 else 'red' for x in df['Várható Záró']]
@@ -255,6 +269,9 @@ try:
             
             st.pyplot(fig)
             st.dataframe(df)
+            
+            with st.expander("⚙️ Rendszer Látcső (Kattints ide a PDF adatokhoz!)"):
+                st.dataframe(df_debug)
             
             excel = generate_excel_report(df, fig)
             st.download_button("📥 Excel Letöltése", excel, "riport.xlsx")
