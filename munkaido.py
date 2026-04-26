@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # --- FŐ CÍM ---
-st.title("Műszak Navigátor 3.4 (Átlátható Matematika)")
+st.title("Műszak Navigátor 3.5 (Személyi frissítés)")
 
 # --- KONFIGURÁCIÓ ---
 TEAMS_RULES = {
@@ -26,7 +26,7 @@ PEOPLE_DATA = {
     "RE":  {"team": "1. Csapat", "fingera_name": "Váradi René"},
     "MÁ":  {"team": "1. Csapat", "fingera_name": "Máté Arpád"},
     "JK":  {"team": "1. Csapat", "fingera_name": "Jakus Klaudia"},
-    "TK":  {"team": "1. Csapat", "fingera_name": "Takács Kristián"},
+    "SÁ":  {"team": "1. Csapat", "fingera_name": "Sátor Árpád"},
     "VIN": {"team": "2. Csapat", "fingera_name": "Vitko Norbert"},
     "VT":  {"team": "2. Csapat", "fingera_name": "Vitko Tamás"},
     "VCS": {"team": "2. Csapat", "fingera_name": "Varga Csaba"},
@@ -173,7 +173,7 @@ def generate_excel_report(df, fig_chart):
     output.seek(0)
     return output
 
-# --- BIZTONSÁGOS CSAPAT-LEKÉRDEZŐ (Nincs SyntaxError) ---
+# --- BIZTONSÁGOS CSAPAT-LEKÉRDEZŐ ---
 def get_team_labels():
     labels = {}
     for t_key in TEAMS_RULES.keys():
@@ -218,7 +218,7 @@ try:
             curr_spolu = get_current_worked_hours(f2)
             
             results = []
-            debug_data = []
+            debug_data = [] 
             norma = get_monthly_obligation(selected_year, selected_month)
             
             for code, info in PEOPLE_DATA.items():
@@ -228,7 +228,6 @@ try:
                 spolu_value = curr_data['spolu']
                 rec_brought = curr_data['rec_brought']
                 
-                # --- AZ ÚJ, ÁTLÁTHATÓ MATEMATIKA ---
                 worked_so_far = spolu_value - rec_brought
                 if worked_so_far < 0:
                     worked_so_far = 0.0
