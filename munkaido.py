@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # --- FŐ CÍM ---
-st.title("Műszak Navigátor 3.5 (Személyi frissítés)")
+st.title("Műszak Navigátor 3.6 (Frissített Csapatok)")
 
 # --- KONFIGURÁCIÓ ---
 TEAMS_RULES = {
@@ -21,16 +21,17 @@ TEAMS_RULES = {
     "2. Csapat": {"weekend_work": "odd"}
 }
 
+# --- ÚJ CSAPATBEOSZTÁS ---
 PEOPLE_DATA = {
     "VIS": {"team": "1. Csapat", "fingera_name": "Váradi István"},
     "RE":  {"team": "1. Csapat", "fingera_name": "Váradi René"},
     "MÁ":  {"team": "1. Csapat", "fingera_name": "Máté Arpád"},
     "JK":  {"team": "1. Csapat", "fingera_name": "Jakus Klaudia"},
-    "SÁ":  {"team": "1. Csapat", "fingera_name": "Sátor Árpád"},
+    "ME":  {"team": "1. Csapat", "fingera_name": "Manetová Erika"},
     "VIN": {"team": "2. Csapat", "fingera_name": "Vitko Norbert"},
     "VT":  {"team": "2. Csapat", "fingera_name": "Vitko Tamás"},
     "VCS": {"team": "2. Csapat", "fingera_name": "Varga Csaba"},
-    "ME":  {"team": "2. Csapat", "fingera_name": "Manetová Erika"}
+    "SÁ":  {"team": "2. Csapat", "fingera_name": "Sátor Árpád"}
 }
 
 HOLIDAYS_2026 = [
@@ -130,8 +131,11 @@ def calculate_future_hours(year, month, start_day, team_name, is_short_friday=Fa
             weekday_len = (7 + 40/60) - 0.5
             weekend_len = (6 + 10/60) - 0.5
             short_friday_len = (6 + 40/60) - 0.5 
+            holiday_len = (5 + 10/60) - 0.5 # Ünnepi munka 11:00-ig
             
-            if is_holiday or weekday >= 5: 
+            if is_holiday:
+                day_hours = round(holiday_len, 2)
+            elif weekday >= 5: 
                 day_hours = round(weekend_len, 2)
             elif weekday == 4 and is_short_friday: 
                 day_hours = round(short_friday_len, 2)
@@ -173,7 +177,6 @@ def generate_excel_report(df, fig_chart):
     output.seek(0)
     return output
 
-# --- BIZTONSÁGOS CSAPAT-LEKÉRDEZŐ ---
 def get_team_labels():
     labels = {}
     for t_key in TEAMS_RULES.keys():
